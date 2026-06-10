@@ -4,13 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useReadContract } from "wagmi";
 import {
   type Address,
+  createPublicClient,
   encodeFunctionData,
   getAddress,
+  http,
   isAddress,
-  verifyMessage,
   zeroAddress,
 } from "viem";
-import { parseSiweMessage } from "viem/siwe";
+import { baseSepolia } from "viem/chains";
+import { parseSiweMessage, verifySiweMessage } from "viem/siwe";
 import { StaticCover } from "@/components/static-cover";
 import {
   BASEDONE_ABI,
@@ -80,6 +82,11 @@ function getStatusCategory(status: number | string | undefined) {
 
   return "unknown";
 }
+
+const baseSepoliaPublicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(),
+});
 
 export function BasedOneApp() {
   const [hydrated, setHydrated] = useState(false);
@@ -259,7 +266,7 @@ export function BasedOneApp() {
             ? Number(parsedMessage.chainId)
             : undefined;
 
-        verified = await verifyMessage({
+        verified = await verifySiweMessage(baseSepoliaPublicClient, {
           address: account,
           message,
           signature,
