@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useReadContract, useWaitForTransactionReceipt } from "wagmi";
+import { useReadContract } from "wagmi";
 import {
   type Address,
   encodeFunctionData,
   getAddress,
   isAddress,
+  verifyMessage,
   zeroAddress,
 } from "viem";
+import { parseSiweMessage } from "viem/siwe";
 import { StaticCover } from "@/components/static-cover";
 import {
   BASEDONE_ABI,
@@ -31,6 +33,22 @@ type WalletConnectResult = {
   }>;
 };
 
+type WalletSendCallsResult =
+  | string
+  | {
+      id: string;
+    };
+
+type WalletCallsStatusReceipt = {
+  status?: "0x0" | "0x1" | "reverted" | "success" | string;
+  transactionHash?: `0x${string}`;
+};
+
+type WalletGetCallsStatusResult = {
+  status?: number | string;
+  receipts?: WalletCallsStatusReceipt[];
+};
+
 type Eip1193Provider = {
   request(args: {
     method: string;
@@ -46,15 +64,35 @@ function createNonce() {
   return `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
 }
 
+function normalizeWalletSendCallsId(result: WalletSendCallsResult) {
+  return typeof result === "string" ? result : result.id;
+}
+
+function getStatusCategory(status: number | string | undefined) {
+  if (typeof status === "number") {
+    if (status >= 100 && status < 200) return "pending";
+    if (status >= 200 && status < 300) return "success";
+    if (status >= 300 && status < 700) return "failure";
+  }
+
+  if (status === "PENDING") return "pending";
+  if (status === "CONFIRMED") return "success";
+
+  return "unknown";
+}
+
 export function BasedOneApp() {
   const [hydrated, setHydrated] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Waiting for client hydration...");
   const [connectedAccount, setConnectedAccount] = useState<Address | null>(null);
   const [signatureState, setSignatureState] = useState<"idle" | "received">("idle");
-  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [siwbVerified, setSiwbVerified] = useState(false);
+  const [siwbChainVerified, setSiwbChainVerified] = useState(false);
   const [provider, setProvider] = useState<Eip1193Provider | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [targetInput, setTargetInput] = useState("");
+  const [callBundleId, setCallBundleId] = useState<string | null>(null);
   const [mintHash, setMintHash] = useState<`0x${string}` | undefined>(undefined);
   const [isMinting, setIsMinting] = useState(false);
 
@@ -84,39 +122,82 @@ export function BasedOneApp() {
     },
   });
 
-  const mintReceipt = useWaitForTransactionReceipt({
-    chainId: BASEDONE_CHAIN_ID,
-    hash: mintHash,
-    query: {
-      enabled: Boolean(mintHash),
-    },
-  });
-
-  useEffect(() => {
-    if (mintReceipt.isSuccess && mintHash) {
-      void eligibility.refetch();
-    }
-  }, [eligibility, mintHash, mintReceipt.isSuccess]);
-
   const alreadyMinted = eligibility.data === true;
   const chainReady = walletChainId === BASEDONE_CHAIN_ID;
   const targetReady = Boolean(normalizedTarget);
-  const mintBusy = isMinting || mintReceipt.isLoading;
-  const receiptErrorMessage =
-    mintReceipt.error instanceof Error
-      ? mintReceipt.error.message
-      : "Mint receipt check failed.";
-  const displayStatusMessage = mintReceipt.isSuccess
-    ? "Mint confirmed on Base Sepolia."
-    : mintReceipt.isError
-      ? receiptErrorMessage
-      : statusMessage;
+  const mintBusy = isMinting || Boolean(callBundleId);
   const canMint =
     Boolean(sourceAddress) &&
     targetReady &&
     chainReady &&
     !eligibility.isLoading &&
     !mintBusy;
+
+  useEffect(() => {
+    if (!provider || !callBundleId) return;
+
+    let cancelled = false;
+
+    const pollStatus = async () => {
+      try {
+        const result = (await provider.request({
+          method: "wallet_getCallsStatus",
+          params: [callBundleId],
+        })) as WalletGetCallsStatusResult;
+
+        if (cancelled) return;
+
+        const category = getStatusCategory(result.status);
+        const firstReceipt = result.receipts?.[0];
+
+        if (category === "pending") {
+          setStatusMessage("Mint submitted. Waiting for confirmation...");
+          return;
+        }
+
+        if (category === "success") {
+          if (firstReceipt?.transactionHash) {
+            setMintHash(firstReceipt.transactionHash);
+          }
+
+          setStatusMessage("Mint confirmed on Base Sepolia.");
+          setIsMinting(false);
+          setCallBundleId(null);
+          void eligibility.refetch();
+          return;
+        }
+
+        if (category === "failure") {
+          if (firstReceipt?.transactionHash) {
+            setMintHash(firstReceipt.transactionHash);
+          }
+
+          setStatusMessage("Mint failed onchain.");
+          setIsMinting(false);
+          setCallBundleId(null);
+        }
+      } catch (error) {
+        if (cancelled) return;
+
+        const message =
+          error instanceof Error ? error.message : "Failed to read call status.";
+
+        setStatusMessage(message);
+        setIsMinting(false);
+        setCallBundleId(null);
+      }
+    };
+
+    void pollStatus();
+    const interval = window.setInterval(() => {
+      void pollStatus();
+    }, 2500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [callBundleId, eligibility, provider]);
 
   async function updateChainState(nextProvider: Eip1193Provider) {
     const chainIdHex = (await nextProvider.request({
@@ -166,14 +247,38 @@ export function BasedOneApp() {
         signInWithEthereum !== null &&
         "signature" in signInWithEthereum;
 
+      let verified = false;
+      let chainVerified = false;
+
+      if (signatureReceived) {
+        const message = signInWithEthereum.message;
+        const signature = signInWithEthereum.signature;
+        const parsedMessage = parseSiweMessage(message);
+        const parsedChainId =
+          parsedMessage.chainId !== undefined
+            ? Number(parsedMessage.chainId)
+            : undefined;
+
+        verified = await verifyMessage({
+          address: account,
+          message,
+          signature,
+        });
+        chainVerified = verified && parsedChainId === BASEDONE_CHAIN_ID;
+      }
+
       setProvider(ethereum);
       setConnectedAccount(getAddress(account));
       setSignatureState(signatureReceived ? "received" : "idle");
+      setSiwbVerified(verified);
+      setSiwbChainVerified(chainVerified);
       await updateChainState(ethereum);
       setStatusMessage(
-        signatureReceived
-          ? "Base login completed and SIWB signature received."
-          : "Base login completed.",
+        chainVerified
+          ? "Base login completed and Base Sepolia SIWB proof verified."
+          : signatureReceived
+            ? "Base login completed and SIWB signature received."
+            : "Base login completed.",
       );
     } catch (error) {
       const message =
@@ -230,7 +335,8 @@ export function BasedOneApp() {
 
     try {
       setIsMinting(true);
-      setStatusMessage("Submitting mint transaction...");
+      setMintHash(undefined);
+      setStatusMessage("Submitting mint transaction bundle...");
 
       const data = encodeFunctionData({
         abi: BASEDONE_ABI,
@@ -238,20 +344,25 @@ export function BasedOneApp() {
         args: [normalizedTarget, 0n, "0x"],
       });
 
-      const hash = (await provider.request({
-        method: "eth_sendTransaction",
+      const result = (await provider.request({
+        method: "wallet_sendCalls",
         params: [
           {
+            version: "2.0.0",
+            chainId: `0x${BASEDONE_CHAIN_ID.toString(16)}`,
             from: sourceAddress,
-            to: BASEDONE_CONTRACT_ADDRESS,
-            data,
+            calls: [
+              {
+                to: BASEDONE_CONTRACT_ADDRESS,
+                data,
+              },
+            ],
           },
         ],
-      })) as `0x${string}`;
+      })) as WalletSendCallsResult;
 
-      setMintHash(hash);
-      setIsMinting(false);
-      setStatusMessage("Mint submitted. Waiting for confirmation...");
+      setCallBundleId(normalizeWalletSendCallsId(result));
+      setStatusMessage("Mint bundle submitted. Waiting for Base Account status...");
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Mint request failed.";
@@ -308,7 +419,11 @@ export function BasedOneApp() {
               <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
                 SIWB
                 <div className="mt-2 text-xs tracking-[0.08em] text-[var(--ink)]">
-                  {signatureState === "received" ? "Received" : "Not received"}
+                  {signatureState === "received"
+                    ? siwbVerified
+                      ? "Verified"
+                      : "Received"
+                    : "Not received"}
                 </div>
               </div>
             </div>
@@ -330,6 +445,13 @@ export function BasedOneApp() {
                       ? "Base Sepolia"
                       : `Chain ${walletChainId}`}
                 </div>
+              </div>
+            </div>
+
+            <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
+              Chain Proof
+              <div className="mt-2 text-xs tracking-[0.08em] text-[var(--ink)]">
+                {siwbChainVerified ? "Signed for Base Sepolia" : "Not verified"}
               </div>
             </div>
 
@@ -386,7 +508,7 @@ export function BasedOneApp() {
             </button>
 
             <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
-              {displayStatusMessage}
+              {statusMessage}
             </div>
 
             {mintHash ? (
@@ -402,7 +524,7 @@ export function BasedOneApp() {
           </div>
 
           <div className="mt-5 border-t border-[var(--line)] px-1 pt-3 text-center text-xs font-medium uppercase tracking-[0.24em] text-[var(--muted)]">
-            v0.1.5
+            v0.1.6
           </div>
         </section>
       </div>
