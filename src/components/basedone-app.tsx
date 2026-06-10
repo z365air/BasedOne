@@ -115,7 +115,6 @@ export function BasedOneApp() {
     Boolean(sourceAddress) &&
     targetReady &&
     chainReady &&
-    eligibility.data === false &&
     !eligibility.isLoading &&
     !mintBusy;
 
@@ -226,11 +225,6 @@ export function BasedOneApp() {
 
     if (!chainReady) {
       setStatusMessage("Switch to Base Sepolia before minting.");
-      return;
-    }
-
-    if (alreadyMinted) {
-      setStatusMessage("This source wallet already minted BasedOne.");
       return;
     }
 
@@ -408,7 +402,7 @@ export function BasedOneApp() {
           </div>
 
           <div className="mt-5 border-t border-[var(--line)] px-1 pt-3 text-center text-xs font-medium uppercase tracking-[0.24em] text-[var(--muted)]">
-            v0.1.4
+            v0.1.5
           </div>
         </section>
       </div>
