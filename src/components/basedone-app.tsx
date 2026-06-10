@@ -7,7 +7,7 @@ import {
   useReadContract,
   useSwitchChain,
   useWaitForTransactionReceipt,
-  useWriteContract,
+  useWalletClient,
 } from "wagmi";
 import {
   type Address,
@@ -94,7 +94,11 @@ export function BasedOneApp() {
   const { address, isConnected, isConnecting, connector } = useAccount();
   const { connectAsync, connectors } = useConnect();
   const { switchChainAsync, isPending: isSwitching } = useSwitchChain();
-  const { data: mintHash, isPending: isWritePending, writeContractAsync } = useWriteContract();
+  const { data: walletClient } = useWalletClient({
+    chainId: BASEDONE_CHAIN_ID,
+  });
+  const [mintHash, setMintHash] = useState<`0x${string}` | undefined>(undefined);
+  const [isMinting, setIsMinting] = useState(false);
   const mintReceipt = useWaitForTransactionReceipt({
     hash: mintHash,
     chainId: BASEDONE_CHAIN_ID,
@@ -149,7 +153,10 @@ export function BasedOneApp() {
   const alreadyMinted = eligibility.data === true;
   const chainReady = walletChainId === BASEDONE_CHAIN_ID;
   const targetReady = Boolean(normalizedTarget);
-  const mintBusy = isWritePending || mintReceipt.isLoading;
+  const mintBusy =
+    isMinting &&
+    !mintReceipt.isSuccess &&
+    !mintReceipt.isError;
   const canMint =
     Boolean(sourceAddress) &&
     targetReady &&
@@ -337,14 +344,22 @@ export function BasedOneApp() {
       setLastErrorDetails(null);
       setLastErrorRaw(null);
       setStatusMessage("Preparing mint transaction...");
+      setIsMinting(true);
+      setMintHash(undefined);
 
-      await writeContractAsync({
+      if (!walletClient) {
+        throw new Error("Base wallet client is unavailable on Base Sepolia.");
+      }
+
+      const hash = await walletClient.writeContract({
         address: BASEDONE_CONTRACT_ADDRESS,
         abi: BASEDONE_ABI,
         functionName: "mint",
         args: [normalizedTarget, 0n, "0x"],
-        chainId: BASEDONE_CHAIN_ID,
+        account: sourceAddress,
+        chain: baseSepolia,
       });
+      setMintHash(hash);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Mint request failed.";
       const code = readErrorField(error, "code");
@@ -358,6 +373,7 @@ export function BasedOneApp() {
       setLastErrorMessage(message);
       setLastErrorDetails(details ?? null);
       setLastErrorRaw(serializeError(error));
+      setIsMinting(false);
     }
   }
 
@@ -368,7 +384,7 @@ export function BasedOneApp() {
       : alreadyMinted
         ? "Already used"
         : "Eligible";
-  const transactionStatusMessage = isWritePending
+  const transactionStatusMessage = isMinting && !mintHash
     ? "Confirm mint in Base Account..."
     : mintReceipt.isLoading && mintHash
       ? "Mint submitted. Waiting for Base Sepolia confirmation..."
