@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BasedOne Animated Cover Prototype</title>
+    <style>
+      :root {
+        --frame-width: min(92vw, 768px);
+        --frame-ratio: 768 / 590;
+        --blue: #2456ff;
+        --blue-soft: rgba(36, 86, 255, 0.18);
+        --ink: #08122f;
+        --line: rgba(127, 164, 255, 0.15);
+        --paper: #eff4ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at top, rgba(37, 80, 255, 0.14), transparent 34%),
+          linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
+        color: var(--ink);
+        font-family: "Segoe UI", Arial, sans-serif;
+      }
+
+      .shell {
+        width: var(--frame-width);
+        display: grid;
+        gap: 18px;
+      }
+
+      .meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        color: rgba(8, 18, 47, 0.72);
+        font-size: 13px;
+      }
+
+      .meta strong {
+        color: var(--ink);
+      }
+
+      .stage {
+        position: relative;
+        width: 100%;
+        aspect-ratio: var(--frame-ratio);
+        overflow: hidden;
+        border-radius: 30px;
+        border: 1px solid rgba(96, 132, 232, 0.18);
+        background: var(--paper);
+        box-shadow: 0 40px 120px rgba(28, 55, 167, 0.12);
+      }
+
+      .base-image {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .matrix-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        opacity: 0.9;
+        pointer-events: none;
+        mask-image: radial-gradient(circle at 50% 49%, transparent 0 16%, rgba(0, 0, 0, 0.42) 34%, black 52%);
+      }
+
+      .matrix-column {
+        position: absolute;
+        top: -16%;
+        width: 18px;
+        height: 132%;
+        animation: column-fall linear infinite;
+        will-change: transform;
+      }
+
+      .matrix-cell {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        border-radius: 3px;
+        background: rgba(96, 150, 255, 0.18);
+        box-shadow: 0 0 12px rgba(96, 150, 255, 0.06);
+      }
+
+      .matrix-cell.large {
+        background: rgba(89, 143, 255, 0.28);
+      }
+
+      .flow-overlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+
+      .flow-dot {
+        fill: var(--blue);
+        opacity: 0;
+      }
+
+      .flow-dot.soft {
+        fill: rgba(36, 86, 255, 0.56);
+      }
+
+      .core-glow {
+        fill: var(--blue-soft);
+        filter: blur(24px);
+        opacity: 0.8;
+        animation: core-breathe 4s ease-in-out infinite;
+        transform-origin: center;
+      }
+
+      .hint {
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(96, 132, 232, 0.14);
+        background: rgba(255, 255, 255, 0.72);
+        line-height: 1.6;
+        font-size: 13px;
+        color: rgba(8, 18, 47, 0.72);
+      }
+
+      @keyframes column-fall {
+        from {
+          transform: translateY(-7%);
+        }
+        to {
+          transform: translateY(9%);
+        }
+      }
+
+      @keyframes core-breathe {
+        0%,
+        100% {
+          transform: scale(0.96);
+          opacity: 0.58;
+        }
+        50% {
+          transform: scale(1.05);
+          opacity: 0.88;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <div class="meta">
+        <span><strong>BasedOne</strong> animated cover prototype</span>
+        <span>Static geometry preserved, motion added as overlays</span>
+      </div>
+
+      <section class="stage">
+        <img
+          class="base-image"
+          src="../public/basedone-cover.png"
+          alt="BasedOne static cover"
+        />
+
+        <div class="matrix-layer" id="matrix-layer"></div>
+
+        <svg
+          class="flow-overlay"
+          viewBox="0 0 768 590"
+          aria-hidden="true"
+        >
+          <circle class="core-glow" cx="385" cy="289" r="78"></circle>
+
+          <g id="flow-group"></g>
+        </svg>
+      </section>
+
+      <div class="hint">
+        This is a separate prototype file. It keeps the original cover as the
+        base image, adds matrix-style falling blocks in the background, and
+        overlays inward data flow from each outer unit to the core.
+      </div>
+    </main>
+
+    <script>
+      const matrixLayer = document.getElementById("matrix-layer");
+      const flowGroup = document.getElementById("flow-group");
+
+      const matrixColumns = [
+        { left: 4.5, duration: 7.8, delay: -1.2, opacity: 0.65 },
+        { left: 12.8, duration: 8.6, delay: -4.7, opacity: 0.45 },
+        { left: 21.3, duration: 7.1, delay: -2.2, opacity: 0.58 },
+        { left: 29.6, duration: 9.1, delay: -6.4, opacity: 0.42 },
+        { left: 38.2, duration: 7.9, delay: -3.3, opacity: 0.62 },
+        { left: 47.1, duration: 8.8, delay: -1.8, opacity: 0.48 },
+        { left: 55.8, duration: 7.2, delay: -5.5, opacity: 0.6 },
+        { left: 64.4, duration: 8.3, delay: -2.7, opacity: 0.44 },
+        { left: 73.1, duration: 9.4, delay: -7.1, opacity: 0.54 },
+        { left: 81.9, duration: 7.4, delay: -3.8, opacity: 0.42 },
+        { left: 90.2, duration: 8.7, delay: -6.2, opacity: 0.6 },
+      ];
+
+      const matrixPattern = [-60, -16, 26, 69, 112, 157, 205, 256, 308, 362, 417, 474, 532, 590, 650];
+
+      matrixColumns.forEach((column, columnIndex) => {
+        const columnEl = document.createElement("div");
+        columnEl.className = "matrix-column";
+        columnEl.style.left = `${column.left}%`;
+        columnEl.style.animationDuration = `${column.duration}s`;
+        columnEl.style.animationDelay = `${column.delay}s`;
+        columnEl.style.opacity = column.opacity;
+
+        matrixPattern.forEach((y, cellIndex) => {
+          const cell = document.createElement("span");
+          const large = cellIndex % 4 === 1;
+          const mid = cellIndex % 3 === 0;
+          const size = large ? 13 : mid ? 9 : 5;
+
+          cell.className = `matrix-cell${large ? " large" : ""}`;
+          cell.style.top = `${y}px`;
+          cell.style.width = `${size}px`;
+          cell.style.height = `${size}px`;
+          cell.style.opacity = String(0.32 + ((cellIndex + columnIndex) % 5) * 0.09);
+          columnEl.appendChild(cell);
+        });
+
+        matrixLayer.appendChild(columnEl);
+      });
+
+      const spokePaths = [
+        { start: [393, 146], end: [392, 223] },
+        { start: [497, 182], end: [443, 243] },
+        { start: [527, 290], end: [462, 289] },
+        { start: [494, 448], end: [441, 337] },
+        { start: [392, 474], end: [392, 356] },
+        { start: [292, 448], end: [343, 338] },
+        { start: [257, 290], end: [321, 289] },
+        { start: [291, 182], end: [344, 243] },
+      ];
+
+      const svgNS = "http://www.w3.org/2000/svg";
+
+      spokePaths.forEach((path, pathIndex) => {
+        [0, 1, 2].forEach((dotIndex) => {
+          const circle = document.createElementNS(svgNS, "circle");
+          circle.setAttribute("class", dotIndex === 1 ? "flow-dot soft" : "flow-dot");
+          circle.setAttribute("r", dotIndex === 1 ? "4.5" : "3.1");
+
+          const motion = document.createElementNS(svgNS, "animateMotion");
+          motion.setAttribute(
+            "path",
+            `M ${path.start[0]} ${path.start[1]} L ${path.end[0]} ${path.end[1]}`,
+          );
+          motion.setAttribute("dur", `${1.9 + dotIndex * 0.24}s`);
+          motion.setAttribute("begin", `${pathIndex * 0.16 + dotIndex * 0.54}s`);
+          motion.setAttribute("repeatCount", "indefinite");
+
+          const opacity = document.createElementNS(svgNS, "animate");
+          opacity.setAttribute("attributeName", "opacity");
+          opacity.setAttribute("values", "0;1;1;0");
+          opacity.setAttribute("dur", `${1.9 + dotIndex * 0.24}s`);
+          opacity.setAttribute("begin", `${pathIndex * 0.16 + dotIndex * 0.54}s`);
+          opacity.setAttribute("repeatCount", "indefinite");
+
+          circle.appendChild(motion);
+          circle.appendChild(opacity);
+          flowGroup.appendChild(circle);
+        });
+      });
+    </script>
+  </body>
+</html>
