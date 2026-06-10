@@ -8,6 +8,9 @@
     "start": "next start",
     "lint": "eslint"
   },
+  "overrides": {
+    "@base-org/account": "latest"
+  },
   "dependencies": {
     "@base-org/account": "^2.4.0",
     "@coinbase/onchainkit": "^1.1.2",

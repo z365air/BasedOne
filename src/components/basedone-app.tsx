@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useConnect, useReadContract, useSendCalls } from "wagmi";
+import {
+  useAccount,
+  useConnect,
+  useReadContract,
+  useSwitchChain,
+  useWaitForTransactionReceipt,
+  useWriteContract,
+} from "wagmi";
 import {
   type Address,
   createPublicClient,
-  encodeFunctionData,
   getAddress,
   http,
   isAddress,
@@ -35,22 +41,6 @@ type WalletConnectResult = {
   }>;
 };
 
-type WalletSendCallsResult =
-  | string
-  | {
-      id: string;
-    };
-
-type WalletCallsStatusReceipt = {
-  status?: "0x0" | "0x1" | "reverted" | "success" | string;
-  transactionHash?: `0x${string}`;
-};
-
-type WalletGetCallsStatusResult = {
-  status?: number | string;
-  receipts?: WalletCallsStatusReceipt[];
-};
-
 type Eip1193Provider = {
   request(args: {
     method: string;
@@ -64,23 +54,6 @@ function createNonce() {
   }
 
   return `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
-}
-
-function normalizeWalletSendCallsId(result: WalletSendCallsResult) {
-  return typeof result === "string" ? result : result.id;
-}
-
-function getStatusCategory(status: number | string | undefined) {
-  if (typeof status === "number") {
-    if (status >= 100 && status < 200) return "pending";
-    if (status >= 200 && status < 300) return "success";
-    if (status >= 300 && status < 700) return "failure";
-  }
-
-  if (status === "PENDING") return "pending";
-  if (status === "CONFIRMED") return "success";
-
-  return "unknown";
 }
 
 function readErrorField(error: unknown, key: string) {
@@ -118,11 +91,19 @@ const baseSepoliaPublicClient = createPublicClient({
 });
 
 export function BasedOneApp() {
-  const { connectors } = useConnect();
-  const { sendCallsAsync } = useSendCalls();
+  const { address, isConnected, isConnecting, connector } = useAccount();
+  const { connectAsync, connectors } = useConnect();
+  const { switchChainAsync, isPending: isSwitching } = useSwitchChain();
+  const { data: mintHash, isPending: isWritePending, writeContractAsync } = useWriteContract();
+  const mintReceipt = useWaitForTransactionReceipt({
+    hash: mintHash,
+    chainId: BASEDONE_CHAIN_ID,
+    query: {
+      enabled: Boolean(mintHash),
+    },
+  });
   const [hydrated, setHydrated] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Waiting for client hydration...");
-  const [connectedAccount, setConnectedAccount] = useState<Address | null>(null);
   const [signatureState, setSignatureState] = useState<"idle" | "received">("idle");
   const [siwbVerified, setSiwbVerified] = useState(false);
   const [siwbChainVerified, setSiwbChainVerified] = useState(false);
@@ -131,9 +112,6 @@ export function BasedOneApp() {
   const [walletChainHex, setWalletChainHex] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [targetInput, setTargetInput] = useState("");
-  const [callBundleId, setCallBundleId] = useState<string | null>(null);
-  const [mintHash, setMintHash] = useState<`0x${string}` | undefined>(undefined);
-  const [isMinting, setIsMinting] = useState(false);
   const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   const [lastErrorMessage, setLastErrorMessage] = useState<string | null>(null);
   const [lastErrorDetails, setLastErrorDetails] = useState<string | null>(null);
@@ -148,7 +126,7 @@ export function BasedOneApp() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  const sourceAddress = connectedAccount ? getAddress(connectedAccount) : null;
+  const sourceAddress = address ? getAddress(address) : null;
   const baseConnector =
     connectors.find((connector) => connector.id === "baseAccount") ??
     connectors.find((connector) => connector.name.toLowerCase().includes("base"));
@@ -171,7 +149,7 @@ export function BasedOneApp() {
   const alreadyMinted = eligibility.data === true;
   const chainReady = walletChainId === BASEDONE_CHAIN_ID;
   const targetReady = Boolean(normalizedTarget);
-  const mintBusy = isMinting || Boolean(callBundleId);
+  const mintBusy = isWritePending || mintReceipt.isLoading;
   const canMint =
     Boolean(sourceAddress) &&
     targetReady &&
@@ -180,70 +158,39 @@ export function BasedOneApp() {
     !mintBusy;
 
   useEffect(() => {
-    if (!provider || !callBundleId) return;
+    if (!isConnected || !sourceAddress || !connector) return;
 
     let cancelled = false;
+    const activeConnector = connector;
 
-    const pollStatus = async () => {
+    async function syncProviderState() {
       try {
-        const result = (await provider.request({
-          method: "wallet_getCallsStatus",
-          params: [callBundleId],
-        })) as WalletGetCallsStatusResult;
+        const nextProvider = (await activeConnector.getProvider()) as
+          | Eip1193Provider
+          | undefined;
+        if (!nextProvider || cancelled) return;
 
-        if (cancelled) return;
-
-        const category = getStatusCategory(result.status);
-        const firstReceipt = result.receipts?.[0];
-
-        if (category === "pending") {
-          setStatusMessage("Mint submitted. Waiting for confirmation...");
-          return;
+        setProvider(nextProvider);
+        await updateChainState(nextProvider);
+      } catch {
+        if (!cancelled) {
+          setProvider(null);
         }
-
-        if (category === "success") {
-          if (firstReceipt?.transactionHash) {
-            setMintHash(firstReceipt.transactionHash);
-          }
-
-          setStatusMessage("Mint confirmed on Base Sepolia.");
-          setIsMinting(false);
-          setCallBundleId(null);
-          void eligibility.refetch();
-          return;
-        }
-
-        if (category === "failure") {
-          if (firstReceipt?.transactionHash) {
-            setMintHash(firstReceipt.transactionHash);
-          }
-
-          setStatusMessage("Mint failed onchain.");
-          setIsMinting(false);
-          setCallBundleId(null);
-        }
-      } catch (error) {
-        if (cancelled) return;
-
-        const message =
-          error instanceof Error ? error.message : "Failed to read call status.";
-
-        setStatusMessage(message);
-        setIsMinting(false);
-        setCallBundleId(null);
       }
-    };
+    }
 
-    void pollStatus();
-    const interval = window.setInterval(() => {
-      void pollStatus();
-    }, 2500);
+    void syncProviderState();
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
     };
-  }, [callBundleId, eligibility, provider]);
+  }, [connector, isConnected, sourceAddress]);
+
+  useEffect(() => {
+    if (mintReceipt.isSuccess) {
+      void eligibility.refetch();
+    }
+  }, [eligibility, mintReceipt.isSuccess]);
 
   async function updateChainState(nextProvider: Eip1193Provider) {
     const chainIdHex = (await nextProvider.request({
@@ -259,13 +206,15 @@ export function BasedOneApp() {
     setStatusMessage("Opening Base Account...");
 
     try {
-      const ethereum = (window as Window & {
-        ethereum?: Eip1193Provider;
-      }).ethereum;
-      const providerFromConnector = baseConnector
-        ? ((await baseConnector.getProvider()) as Eip1193Provider | undefined)
-        : undefined;
-      const resolvedProvider = providerFromConnector ?? ethereum;
+      if (!baseConnector) {
+        throw new Error("Base Account connector is unavailable.");
+      }
+
+      await connectAsync({ connector: baseConnector });
+
+      const resolvedProvider = (await baseConnector.getProvider()) as
+        | Eip1193Provider
+        | undefined;
 
       if (!resolvedProvider) {
         throw new Error("Base provider is unavailable in this browser.");
@@ -319,7 +268,6 @@ export function BasedOneApp() {
       }
 
       setProvider(resolvedProvider);
-      setConnectedAccount(getAddress(account));
       setSignatureState(signatureReceived ? "received" : "idle");
       setSiwbVerified(verified);
       setSiwbChainVerified(chainVerified);
@@ -342,18 +290,17 @@ export function BasedOneApp() {
   }
 
   async function handleSwitchNetwork() {
-    if (!provider) {
+    if (!isConnected) {
       setStatusMessage("Sign in with Base first.");
       return;
     }
 
     try {
       setStatusMessage("Switching wallet network to Base Sepolia...");
-      await provider.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: `0x${BASEDONE_CHAIN_ID.toString(16)}` }],
-      });
-      await updateChainState(provider);
+      await switchChainAsync({ chainId: BASEDONE_CHAIN_ID });
+      if (provider) {
+        await updateChainState(provider);
+      }
       setStatusMessage("Wallet switched to Base Sepolia.");
     } catch (error) {
       const message =
@@ -364,7 +311,7 @@ export function BasedOneApp() {
   }
 
   async function handleMint() {
-    if (!provider) {
+    if (!isConnected) {
       setStatusMessage("Sign in with Base first.");
       return;
     }
@@ -385,33 +332,19 @@ export function BasedOneApp() {
     }
 
     try {
-      setIsMinting(true);
-      setMintHash(undefined);
-      setCallBundleId(null);
       setLastErrorCode(null);
       setLastErrorMessage(null);
       setLastErrorDetails(null);
       setLastErrorRaw(null);
-      setStatusMessage("Submitting mint transaction bundle...");
+      setStatusMessage("Preparing mint transaction...");
 
-      const data = encodeFunctionData({
+      await writeContractAsync({
+        address: BASEDONE_CONTRACT_ADDRESS,
         abi: BASEDONE_ABI,
         functionName: "mint",
         args: [normalizedTarget, 0n, "0x"],
-      });
-
-      const result = await sendCallsAsync({
         chainId: BASEDONE_CHAIN_ID,
-        calls: [
-          {
-            to: BASEDONE_CONTRACT_ADDRESS,
-            data,
-          },
-        ],
       });
-
-      setCallBundleId(normalizeWalletSendCallsId(result as WalletSendCallsResult));
-      setStatusMessage("Mint bundle submitted. Waiting for Base Account status...");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Mint request failed.";
       const code = readErrorField(error, "code");
@@ -425,7 +358,6 @@ export function BasedOneApp() {
       setLastErrorMessage(message);
       setLastErrorDetails(details ?? null);
       setLastErrorRaw(serializeError(error));
-      setIsMinting(false);
     }
   }
 
@@ -436,6 +368,15 @@ export function BasedOneApp() {
       : alreadyMinted
         ? "Already used"
         : "Eligible";
+  const transactionStatusMessage = isWritePending
+    ? "Confirm mint in Base Account..."
+    : mintReceipt.isLoading && mintHash
+      ? "Mint submitted. Waiting for Base Sepolia confirmation..."
+      : mintReceipt.isSuccess
+        ? "Mint confirmed on Base Sepolia."
+        : mintReceipt.isError
+          ? "Mint failed onchain."
+          : null;
 
   return (
     <main
@@ -469,7 +410,7 @@ export function BasedOneApp() {
               <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
                 Connected
                 <div className="mt-2 text-xs tracking-[0.08em] text-[var(--ink)]">
-                  {connectedAccount ? shortenAddress(connectedAccount) : "Not connected"}
+                  {sourceAddress ? shortenAddress(sourceAddress) : isConnecting ? "Connecting" : "Not connected"}
                 </div>
               </div>
 
@@ -514,9 +455,9 @@ export function BasedOneApp() {
               </div>
 
               <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
-                Call Bundle
+                Tx Path
                 <div className="mt-2 break-all text-xs tracking-[0.08em] text-[var(--ink)]">
-                  {callBundleId ? shortenAddress(callBundleId) : "Not created"}
+                  Write Contract
                 </div>
               </div>
             </div>
@@ -544,8 +485,8 @@ export function BasedOneApp() {
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => setTargetInput(connectedAccount ?? "")}
-                  disabled={!connectedAccount}
+                  onClick={() => setTargetInput(sourceAddress ?? "")}
+                  disabled={!sourceAddress}
                   className="h-10 flex-1 rounded-[1rem] border border-[var(--line)] bg-[#f5f8ff] px-3 text-xs font-semibold tracking-[0.04em] text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Use connected
@@ -560,13 +501,14 @@ export function BasedOneApp() {
               </div>
             </label>
 
-            {!chainReady && connectedAccount ? (
+            {!chainReady && sourceAddress ? (
               <button
                 type="button"
                 onClick={handleSwitchNetwork}
+                disabled={isSwitching}
                 className="h-12 w-full rounded-[1.1rem] border border-[var(--line)] bg-white px-4 text-sm font-semibold tracking-[0.02em] text-[var(--ink)]"
               >
-                Switch to Base Sepolia
+                {isSwitching ? "Switching..." : "Switch to Base Sepolia"}
               </button>
             ) : null}
 
@@ -581,7 +523,7 @@ export function BasedOneApp() {
             </button>
 
             <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
-              {statusMessage}
+              {transactionStatusMessage ?? statusMessage}
             </div>
 
             {(lastErrorCode || lastErrorMessage || lastErrorDetails) ? (
@@ -617,7 +559,7 @@ export function BasedOneApp() {
           </div>
 
           <div className="mt-5 border-t border-[var(--line)] px-1 pt-3 text-center text-xs font-medium uppercase tracking-[0.24em] text-[var(--muted)]">
-            v0.1.8
+            v0.1.9
           </div>
         </section>
       </div>
