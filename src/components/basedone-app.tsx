@@ -83,6 +83,14 @@ function getStatusCategory(status: number | string | undefined) {
   return "unknown";
 }
 
+function readErrorField(error: unknown, key: string) {
+  if (typeof error !== "object" || error === null) return undefined;
+  const value = (error as Record<string, unknown>)[key];
+  return typeof value === "string" || typeof value === "number"
+    ? String(value)
+    : undefined;
+}
+
 const baseSepoliaPublicClient = createPublicClient({
   chain: baseSepolia,
   transport: http(),
@@ -97,11 +105,15 @@ export function BasedOneApp() {
   const [siwbChainVerified, setSiwbChainVerified] = useState(false);
   const [provider, setProvider] = useState<Eip1193Provider | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
+  const [walletChainHex, setWalletChainHex] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [targetInput, setTargetInput] = useState("");
   const [callBundleId, setCallBundleId] = useState<string | null>(null);
   const [mintHash, setMintHash] = useState<`0x${string}` | undefined>(undefined);
   const [isMinting, setIsMinting] = useState(false);
+  const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
+  const [lastErrorMessage, setLastErrorMessage] = useState<string | null>(null);
+  const [lastErrorDetails, setLastErrorDetails] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -211,6 +223,7 @@ export function BasedOneApp() {
       method: "eth_chainId",
     })) as `0x${string}`;
 
+    setWalletChainHex(chainIdHex);
     setWalletChainId(Number.parseInt(chainIdHex, 16));
   }
 
@@ -343,6 +356,10 @@ export function BasedOneApp() {
     try {
       setIsMinting(true);
       setMintHash(undefined);
+      setCallBundleId(null);
+      setLastErrorCode(null);
+      setLastErrorMessage(null);
+      setLastErrorDetails(null);
       setStatusMessage("Submitting mint transaction bundle...");
 
       const data = encodeFunctionData({
@@ -371,10 +388,17 @@ export function BasedOneApp() {
       setCallBundleId(normalizeWalletSendCallsId(result));
       setStatusMessage("Mint bundle submitted. Waiting for Base Account status...");
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Mint request failed.";
+      const message = error instanceof Error ? error.message : "Mint request failed.";
+      const code = readErrorField(error, "code");
+      const details =
+        readErrorField(error, "details") ??
+        readErrorField(error, "shortMessage") ??
+        readErrorField(error, "cause");
 
       setStatusMessage(message);
+      setLastErrorCode(code ?? null);
+      setLastErrorMessage(message);
+      setLastErrorDetails(details ?? null);
       setIsMinting(false);
     }
   }
@@ -455,6 +479,22 @@ export function BasedOneApp() {
               </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
+                Raw Chain ID
+                <div className="mt-2 break-all text-xs tracking-[0.08em] text-[var(--ink)]">
+                  {walletChainHex ?? "Unknown"}
+                </div>
+              </div>
+
+              <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
+                Call Bundle
+                <div className="mt-2 break-all text-xs tracking-[0.08em] text-[var(--ink)]">
+                  {callBundleId ? shortenAddress(callBundleId) : "Not created"}
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
               Chain Proof
               <div className="mt-2 text-xs tracking-[0.08em] text-[var(--ink)]">
@@ -518,6 +558,20 @@ export function BasedOneApp() {
               {statusMessage}
             </div>
 
+            {(lastErrorCode || lastErrorMessage || lastErrorDetails) ? (
+              <div className="rounded-[1.2rem] border border-[rgba(176,58,58,0.16)] bg-[rgba(255,245,245,0.92)] p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[#8f3131]">
+                <div>Error Code: {lastErrorCode ?? "n/a"}</div>
+                <div className="mt-2 break-words normal-case tracking-[0.02em]">
+                  {lastErrorMessage ?? "No error message"}
+                </div>
+                {lastErrorDetails ? (
+                  <div className="mt-2 break-words normal-case tracking-[0.02em]">
+                    {lastErrorDetails}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {mintHash ? (
               <a
                 href={`https://sepolia.basescan.org/tx/${mintHash}`}
@@ -531,7 +585,7 @@ export function BasedOneApp() {
           </div>
 
           <div className="mt-5 border-t border-[var(--line)] px-1 pt-3 text-center text-xs font-medium uppercase tracking-[0.24em] text-[var(--muted)]">
-            v0.1.6
+            v0.1.7
           </div>
         </section>
       </div>
