@@ -7,13 +7,13 @@ import {
   createStorage,
   http,
 } from "wagmi";
-import { baseSepolia } from "wagmi/chains";
-import { baseAccount, injected } from "wagmi/connectors";
+import { base, baseSepolia } from "wagmi/chains";
+import { baseAccount } from "wagmi/connectors";
 
 export const wagmiConfig = createConfig({
-  chains: [baseSepolia],
+  chains: [base, baseSepolia],
+  multiInjectedProviderDiscovery: false,
   connectors: [
-    injected(),
     baseAccount({
       appName: "BasedOne",
     }),
@@ -23,6 +23,7 @@ export const wagmiConfig = createConfig({
     storage: cookieStorage,
   }),
   transports: {
+    [base.id]: http(),
     [baseSepolia.id]: http(),
   },
 });
