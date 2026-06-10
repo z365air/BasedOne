@@ -7,11 +7,11 @@ import {
   useReadContract,
   useSwitchChain,
   useWaitForTransactionReceipt,
-  useWalletClient,
 } from "wagmi";
 import {
   type Address,
   createPublicClient,
+  encodeFunctionData,
   getAddress,
   http,
   isAddress,
@@ -94,9 +94,6 @@ export function BasedOneApp() {
   const { address, isConnected, isConnecting, connector } = useAccount();
   const { connectAsync, connectors } = useConnect();
   const { switchChainAsync, isPending: isSwitching } = useSwitchChain();
-  const { data: walletClient } = useWalletClient({
-    chainId: BASEDONE_CHAIN_ID,
-  });
   const [mintHash, setMintHash] = useState<`0x${string}` | undefined>(undefined);
   const [isMinting, setIsMinting] = useState(false);
   const mintReceipt = useWaitForTransactionReceipt({
@@ -347,18 +344,25 @@ export function BasedOneApp() {
       setIsMinting(true);
       setMintHash(undefined);
 
-      if (!walletClient) {
-        throw new Error("Base wallet client is unavailable on Base Sepolia.");
+      if (!provider) {
+        throw new Error("Base provider is unavailable for mint.");
       }
 
-      const hash = await walletClient.writeContract({
-        address: BASEDONE_CONTRACT_ADDRESS,
+      const data = encodeFunctionData({
         abi: BASEDONE_ABI,
         functionName: "mint",
         args: [normalizedTarget, 0n, "0x"],
-        account: sourceAddress,
-        chain: baseSepolia,
       });
+      const hash = (await provider.request({
+        method: "eth_sendTransaction",
+        params: [
+          {
+            from: sourceAddress,
+            to: BASEDONE_CONTRACT_ADDRESS,
+            data,
+          },
+        ],
+      })) as `0x${string}`;
       setMintHash(hash);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Mint request failed.";
@@ -473,7 +477,7 @@ export function BasedOneApp() {
               <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
                 Tx Path
                 <div className="mt-2 break-all text-xs tracking-[0.08em] text-[var(--ink)]">
-                  Write Contract
+                  eth_sendTransaction
                 </div>
               </div>
             </div>
@@ -575,7 +579,7 @@ export function BasedOneApp() {
           </div>
 
           <div className="mt-5 border-t border-[var(--line)] px-1 pt-3 text-center text-xs font-medium uppercase tracking-[0.24em] text-[var(--muted)]">
-            v0.1.9
+            v0.1.10
           </div>
         </section>
       </div>
