@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useReadContract } from "wagmi";
+import { useConnect, useReadContract, useSendCalls } from "wagmi";
 import {
   type Address,
   createPublicClient,
@@ -91,12 +91,35 @@ function readErrorField(error: unknown, key: string) {
     : undefined;
 }
 
+function serializeError(error: unknown) {
+  if (error instanceof Error) {
+    return JSON.stringify(
+      {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        ...Object.fromEntries(Object.entries(error as unknown as Record<string, unknown>)),
+      },
+      null,
+      2,
+    );
+  }
+
+  if (typeof error === "object" && error !== null) {
+    return JSON.stringify(error, null, 2);
+  }
+
+  return String(error);
+}
+
 const baseSepoliaPublicClient = createPublicClient({
   chain: baseSepolia,
   transport: http(),
 });
 
 export function BasedOneApp() {
+  const { connectors } = useConnect();
+  const { sendCallsAsync } = useSendCalls();
   const [hydrated, setHydrated] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Waiting for client hydration...");
   const [connectedAccount, setConnectedAccount] = useState<Address | null>(null);
@@ -114,6 +137,7 @@ export function BasedOneApp() {
   const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   const [lastErrorMessage, setLastErrorMessage] = useState<string | null>(null);
   const [lastErrorDetails, setLastErrorDetails] = useState<string | null>(null);
+  const [lastErrorRaw, setLastErrorRaw] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -125,6 +149,9 @@ export function BasedOneApp() {
   }, []);
 
   const sourceAddress = connectedAccount ? getAddress(connectedAccount) : null;
+  const baseConnector =
+    connectors.find((connector) => connector.id === "baseAccount") ??
+    connectors.find((connector) => connector.name.toLowerCase().includes("base"));
   const normalizedTarget = useMemo(() => {
     const value = targetInput.trim();
     return isAddress(value) ? getAddress(value) : null;
@@ -235,12 +262,16 @@ export function BasedOneApp() {
       const ethereum = (window as Window & {
         ethereum?: Eip1193Provider;
       }).ethereum;
+      const providerFromConnector = baseConnector
+        ? ((await baseConnector.getProvider()) as Eip1193Provider | undefined)
+        : undefined;
+      const resolvedProvider = providerFromConnector ?? ethereum;
 
-      if (!ethereum) {
+      if (!resolvedProvider) {
         throw new Error("Base provider is unavailable in this browser.");
       }
 
-      const result = (await ethereum.request({
+      const result = (await resolvedProvider.request({
         method: "wallet_connect",
         params: [
           {
@@ -287,12 +318,12 @@ export function BasedOneApp() {
         chainVerified = verified && parsedChainId === BASEDONE_CHAIN_ID;
       }
 
-      setProvider(ethereum);
+      setProvider(resolvedProvider);
       setConnectedAccount(getAddress(account));
       setSignatureState(signatureReceived ? "received" : "idle");
       setSiwbVerified(verified);
       setSiwbChainVerified(chainVerified);
-      await updateChainState(ethereum);
+      await updateChainState(resolvedProvider);
       setStatusMessage(
         chainVerified
           ? "Base login completed and Base Sepolia SIWB proof verified."
@@ -360,6 +391,7 @@ export function BasedOneApp() {
       setLastErrorCode(null);
       setLastErrorMessage(null);
       setLastErrorDetails(null);
+      setLastErrorRaw(null);
       setStatusMessage("Submitting mint transaction bundle...");
 
       const data = encodeFunctionData({
@@ -368,24 +400,17 @@ export function BasedOneApp() {
         args: [normalizedTarget, 0n, "0x"],
       });
 
-      const result = (await provider.request({
-        method: "wallet_sendCalls",
-        params: [
+      const result = await sendCallsAsync({
+        chainId: BASEDONE_CHAIN_ID,
+        calls: [
           {
-            version: "2.0.0",
-            chainId: `0x${BASEDONE_CHAIN_ID.toString(16)}`,
-            from: sourceAddress,
-            calls: [
-              {
-                to: BASEDONE_CONTRACT_ADDRESS,
-                data,
-              },
-            ],
+            to: BASEDONE_CONTRACT_ADDRESS,
+            data,
           },
         ],
-      })) as WalletSendCallsResult;
+      });
 
-      setCallBundleId(normalizeWalletSendCallsId(result));
+      setCallBundleId(normalizeWalletSendCallsId(result as WalletSendCallsResult));
       setStatusMessage("Mint bundle submitted. Waiting for Base Account status...");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Mint request failed.";
@@ -399,6 +424,7 @@ export function BasedOneApp() {
       setLastErrorCode(code ?? null);
       setLastErrorMessage(message);
       setLastErrorDetails(details ?? null);
+      setLastErrorRaw(serializeError(error));
       setIsMinting(false);
     }
   }
@@ -572,6 +598,12 @@ export function BasedOneApp() {
               </div>
             ) : null}
 
+            {lastErrorRaw ? (
+              <pre className="overflow-x-auto rounded-[1.2rem] border border-[rgba(176,58,58,0.12)] bg-[rgba(255,250,250,0.96)] p-4 text-[10px] leading-5 text-[#7a2e2e]">
+                {lastErrorRaw}
+              </pre>
+            ) : null}
+
             {mintHash ? (
               <a
                 href={`https://sepolia.basescan.org/tx/${mintHash}`}
@@ -585,7 +617,7 @@ export function BasedOneApp() {
           </div>
 
           <div className="mt-5 border-t border-[var(--line)] px-1 pt-3 text-center text-xs font-medium uppercase tracking-[0.24em] text-[var(--muted)]">
-            v0.1.7
+            v0.1.8
           </div>
         </section>
       </div>
