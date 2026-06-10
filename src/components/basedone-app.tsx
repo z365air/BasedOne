@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   useAccount,
   useConnect,
+  useDisconnect,
   useReadContract,
   useSwitchChain,
   useWaitForTransactionReceipt,
@@ -12,6 +13,8 @@ import {
   type Address,
   createPublicClient,
   encodeFunctionData,
+  formatEther,
+  formatGwei,
   getAddress,
   http,
   isAddress,
@@ -93,6 +96,7 @@ const baseSepoliaPublicClient = createPublicClient({
 export function BasedOneApp() {
   const { address, isConnected, isConnecting, connector } = useAccount();
   const { connectAsync, connectors } = useConnect();
+  const { disconnect } = useDisconnect();
   const { switchChainAsync, isPending: isSwitching } = useSwitchChain();
   const [mintHash, setMintHash] = useState<`0x${string}` | undefined>(undefined);
   const [isMinting, setIsMinting] = useState(false);
@@ -340,7 +344,7 @@ export function BasedOneApp() {
       setLastErrorMessage(null);
       setLastErrorDetails(null);
       setLastErrorRaw(null);
-      setStatusMessage("Preparing mint transaction...");
+      setStatusMessage("Running preflight checks...");
       setIsMinting(true);
       setMintHash(undefined);
 
@@ -348,11 +352,38 @@ export function BasedOneApp() {
         throw new Error("Base provider is unavailable for mint.");
       }
 
+      const [balance, gasEstimate, feeEstimate] = await Promise.all([
+        baseSepoliaPublicClient.getBalance({
+          address: sourceAddress,
+        }),
+        baseSepoliaPublicClient.estimateContractGas({
+          address: BASEDONE_CONTRACT_ADDRESS,
+          abi: BASEDONE_ABI,
+          functionName: "mint",
+          args: [normalizedTarget, 0n, "0x"],
+          account: sourceAddress,
+        }),
+        baseSepoliaPublicClient.estimateFeesPerGas(),
+      ]);
+
+      const gasPrice =
+        (feeEstimate as { maxFeePerGas?: bigint; gasPrice?: bigint }).maxFeePerGas ??
+        (feeEstimate as { gasPrice?: bigint }).gasPrice ??
+        0n;
+      const estimatedCost = gasEstimate * gasPrice;
+
+      if (balance < estimatedCost) {
+        throw new Error(
+          `Insufficient Base Sepolia ETH for gas. Balance: ${formatEther(balance)} ETH. Estimated max cost: ${formatEther(estimatedCost)} ETH (${gasEstimate.toString()} gas at ${formatGwei(gasPrice)} gwei).`,
+        );
+      }
+
       const data = encodeFunctionData({
         abi: BASEDONE_ABI,
         functionName: "mint",
         args: [normalizedTarget, 0n, "0x"],
       });
+      setStatusMessage("Preflight passed. Opening Base Account confirmation...");
       const hash = (await provider.request({
         method: "eth_sendTransaction",
         params: [
@@ -360,6 +391,7 @@ export function BasedOneApp() {
             from: sourceAddress,
             to: BASEDONE_CONTRACT_ADDRESS,
             data,
+            gas: `0x${gasEstimate.toString(16)}`,
           },
         ],
       })) as `0x${string}`;
@@ -416,15 +448,35 @@ export function BasedOneApp() {
 
         <section className="relative z-50 w-full rounded-[2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.92)] p-4 shadow-[0_30px_100px_rgba(34,74,255,0.08)] backdrop-blur-xl sm:p-5">
           <div className="flex flex-col gap-3">
-            <button
-              type="button"
-              onClick={handleBaseLogin}
-              disabled={!hydrated || isSigningIn}
-              className="h-14 w-full touch-manipulation rounded-[1.2rem] bg-[linear-gradient(135deg,#2953ff,#5ca4ff)] px-4 text-sm font-semibold tracking-[0.02em] text-white disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ WebkitTapHighlightColor: "transparent" }}
-            >
-              {isSigningIn ? "Signing in..." : "Sign in with Base"}
-            </button>
+            {isConnected ? (
+              <button
+                type="button"
+                onClick={() => {
+                  disconnect();
+                  setSignatureState("idle");
+                  setSiwbVerified(false);
+                  setSiwbChainVerified(false);
+                  setProvider(null);
+                  setWalletChainId(null);
+                  setWalletChainHex(null);
+                  setStatusMessage("Disconnected.");
+                }}
+                className="h-14 w-full touch-manipulation rounded-[1.2rem] border border-[var(--line)] bg-white px-4 text-sm font-semibold tracking-[0.02em] text-[var(--ink)]"
+                style={{ WebkitTapHighlightColor: "transparent" }}
+              >
+                Disconnect
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleBaseLogin}
+                disabled={!hydrated || isSigningIn}
+                className="h-14 w-full touch-manipulation rounded-[1.2rem] bg-[linear-gradient(135deg,#2953ff,#5ca4ff)] px-4 text-sm font-semibold tracking-[0.02em] text-white disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ WebkitTapHighlightColor: "transparent" }}
+              >
+                {isSigningIn ? "Signing in..." : "Sign in with Base"}
+              </button>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/80 p-4 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
@@ -579,7 +631,7 @@ export function BasedOneApp() {
           </div>
 
           <div className="mt-5 border-t border-[var(--line)] px-1 pt-3 text-center text-xs font-medium uppercase tracking-[0.24em] text-[var(--muted)]">
-            v0.1.10
+            v0.1.11
           </div>
         </section>
       </div>
